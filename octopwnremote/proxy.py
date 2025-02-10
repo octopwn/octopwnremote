@@ -14,6 +14,7 @@ class OctoPwnRemoteProxy:
 		self.client = None
 		self.tcpserver = None
 		self.tcpserver_task = None
+		self.commslock = None
 
 	async def close(self):
 		if self.client is not None:
@@ -34,28 +35,32 @@ class OctoPwnRemoteProxy:
 				writer.close()
 				return
 			while True:
-				data = await reader.readline()
-				if data is None or len(data) == 0:
-					return
-				
-				data = data.decode().strip()
-				print('AI -> PROXY: ', repr(data))
-				json_data = json.loads(data)
-				command = json_data['command']
-				args = json_data['args']
+				async with self.commslock:
+					data = await reader.readline()
+					if data is None or len(data) == 0:
+						return
+					
+					data = data.decode().strip()
+					print('AI -> PROXY: ', repr(data))
+					json_data = json.loads(data)
+					command = json_data['command']
+					args = json_data['args']
 
-				# dynamically invoke the command on the client
-				t = await getattr(self.client, command)(*args)
-				if len(t) == 2:
-					result, err = t
-				else:
-					_, result, err = t
-				resdata = {
-					'result': result,
-					'error': str(err) if err is not None else None
-				}
-				print('Result:', resdata)			
-				writer.write(json.dumps(resdata).encode()+b'\n')
+					# dynamically invoke the command on the client
+					t = await getattr(self.client, command)(*args)
+					if len(t) == 2:
+						result, err = t
+					else:
+						_, result, err = t
+					resdata = {
+						'result': result,
+						'error': str(err) if err is not None else None
+					}
+					#print('Result:', resdata)
+					print('PROXY -> AI: "%s" (%s)', (command, len(str(resdata))))
+					writer.write(json.dumps(resdata).encode()+b'\n')
+
+					print('============================================\n\n')
 
 
 		except Exception as e:
@@ -69,6 +74,7 @@ class OctoPwnRemoteProxy:
 	
 	async def run(self):
 		try:
+			self.commslock = asyncio.Lock()
 			self.client = OctoPwnRemoteServer(self.remote_server_ip, self.remote_server_port, debug=True)
 			_, err = await self.client.run()
 			if err is not None:

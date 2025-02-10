@@ -75,6 +75,20 @@ async def main():
         print(err)
         return
     
+    res, err = await client.get_file_size('/volatile/octopwn.session')
+    if err is not None:
+        print(err)
+        return
+    
+    print('File size:', res)
+
+    res, err = await client.read_file_raw('/volatile/octopwn.session', 0, 100)
+    if err is not None:
+        print(err)
+        return
+    
+    print('File content:', res)
+    
     ## Create a credential for user hodor with password hodor
     cid, err = await client.create_credential_password('hodor', 'hodor', 'NORTH')
     if err is not None:

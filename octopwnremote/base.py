@@ -36,7 +36,7 @@ class OctoPwnRemoteBase:
 			while self._closed is False:
 				response_raw = await self.ws.recv()
 				if self.debug is True:
-					print('OCTO -> SRV: ', response_raw)
+					print('OCTO -> SRV: ', len(response_raw))
 				token, response, error = self.decode_response(response_raw)
 				if token == 0:
 					await self.handle_out_of_band(response, error)
@@ -394,13 +394,13 @@ class OctoPwnRemoteBase:
 		except Exception as e:
 			return None, e
 		
-	async def create_target(self, ip:str=None, hostname:str=None, realm:str = None, domain:str=None):
+	async def create_target(self, ip:str=None, hostname:str=None, realm:str = None, dcip:str=None):
 		try:
 			target = {
 				'ip': ip,
 				'hostname': hostname,
 				'realm': realm,
-				'domain': domain
+				'dcip': dcip
 			}
 			return await self.create_target_raw(target)
 		except Exception as e:
@@ -408,12 +408,21 @@ class OctoPwnRemoteBase:
 	
 	async def run_session_command_single(self, sessionid, command:str, args:List[str] = []):
 		try:
+			# correcting the args
+			# most args are taken as strings
+			finalargs = []
+			for arg in args:
+				if isinstance(arg, bool):
+					finalargs.append('0' if arg is False else '1')
+					continue
+				finalargs.append(arg)
+			
 			cmd = {
 				"sessionid": sessionid,
 				"command": 'run_session_command',
 				"args": {
 					'command': command,
-					'args': args
+					'args': finalargs
 				}
 			}
 			return await self.send_recv(cmd)
@@ -512,4 +521,40 @@ class OctoPwnRemoteBase:
 		except Exception as e:
 			yield None, None, e
 
+	async def read_file_raw(self, path:str, offset:int, size:int):
+		try:
+			cmd = {
+				"sessionid": "0",
+				"command": "read_file",
+				"args": {
+					'path': path,
+					'offset': offset,
+					'size': size
+				}
+			}
+			return await self.send_recv(cmd)
+		except Exception as e:
+			return None, e
 	
+	async def get_file_size(self, path:str):
+		try:
+			return await self.read_file_raw(path, 0, 0)
+		except Exception as e:
+			return None, e
+
+	async def read_file_full(self, path:str, batchsize=10240):
+		try:
+			total, err = await self.get_file_size(path)
+			if err is not None:
+				raise err
+			
+			start = 0
+			while start < total:
+				res, err = await self.read_file_raw(path, start, batchsize)
+				if err is not None:
+					raise err
+				yield res['data'], None
+				start += batchsize
+			
+		except Exception as e:
+			yield None, e

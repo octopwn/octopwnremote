@@ -287,17 +287,17 @@ class OctoPwnRemoteBlockingBase:
 			result, err =  self.send_recv(cmd)
 			if err is not None:
 				raise err
-			return result[0], None
+			return result, None
 		except Exception as e:
 			return None, e
 		
-	def create_target(self, ip:str=None, hostname:str=None, realm:str = None, domain:str=None):
+	def create_target(self, ip:str=None, hostname:str=None, realm:str = None, dcip:str=None):
 		try:
 			target = {
 				'ip': ip,
 				'hostname': hostname,
 				'realm': realm,
-				'domain': domain
+				'dcip': dcip
 			}
 			return self.create_target_raw(target)
 		except Exception as e:
@@ -379,11 +379,11 @@ class OctoPwnRemoteBlockingBase:
 			cmd = {
 				
 				"command": "get_session_messages",
-				"args": {
+				"args": [
 					sessionid,
 					start,
 					count
-				}
+				]
 			}
 			return self.send_recv(cmd)
 		except Exception as e:
@@ -403,6 +403,64 @@ class OctoPwnRemoteBlockingBase:
 				start += batchsize
 		except Exception as e:
 			yield None, None, e
+
+		
+	def read_file_raw(self, path:str, offset:int, size:int):
+		try:
+			cmd = {
+				"sessionid": "0",
+				"command": "read_file_raw",
+				"args": [
+					path,
+					offset,
+					size
+				]
+			}
+			result, err = self.send_recv(cmd)
+			if err is not None:
+				raise err
+			return result, None
+		except Exception as e:
+			return None, e
+	
+	def get_file_size(self, path:str):
+		try:
+			res, err = self.read_file_raw(path, 0, 0)
+			if err is not None:
+				raise err
+			if 'error' in res and res['error'] is not None:
+				raise Exception(res['error'])
+			return res['result']['total'], None
+		except Exception as e:
+			return None, e
+	
+	def read_file(self, path:str, offset:int, size:int):
+		try:
+			res, err = self.read_file_raw(path, offset, size)
+			if err is not None:
+				raise err
+			if 'error' in res and res['error'] is not None:
+				raise Exception(res['error'])
+			return bytes.fromhex(res['result']['data']), None
+		except Exception as e:
+			return None, e
+	
+	def download_file(self, path:str, localpath:str, batchsize=40960):
+		try:
+			size, err = self.get_file_size(path)
+			if err is not None:
+				raise err
+			offset = 0
+			with open(localpath, 'wb') as f:
+				while offset < size:
+					data, err = self.read_file(path, offset, batchsize)
+					if err is not None:
+						raise err
+					f.write(data)
+					offset += len(data)
+			return True, None
+		except Exception as e:
+			return None, e
 
 def main():
 	pb = OctoPwnRemoteBlockingBase()
