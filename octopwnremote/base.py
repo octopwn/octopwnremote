@@ -1,18 +1,20 @@
 import traceback
 import json
 import asyncio
-
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 class OctoPwnRemoteBase:
-	def __init__(self, timeout=5, debug=False):
+	def __init__(self, timeout=10, debug=False):
 		self.token = 0
-		self.timeout = timeout
+		self.timeout = 10#timeout
 		self.ws = None
 		self.debug = debug
 		self._closed = False
 		self.__in_task = None
 		self.__token_dispatch = {}
+		self.__new_credential_callbacks = []
+		self.__new_session_callbacks = []
+		self.__new_target_callbacks = []
 
 	def get_token(self):
 		self.token += 1
@@ -36,10 +38,11 @@ class OctoPwnRemoteBase:
 			while self._closed is False:
 				response_raw = await self.ws.recv()
 				if self.debug is True:
-					print('OCTO -> SRV: ', len(response_raw))
+					rlen = len(response_raw)
+					print('OCTO -> SRV: ', rlen if rlen > 1024 else response_raw)
 				token, response, error = self.decode_response(response_raw)
 				if token == 0:
-					await self.handle_out_of_band(response, error)
+					x = asyncio.create_task(self.handle_out_of_band(response, error))
 					continue
 				
 				if error is not None:
@@ -50,16 +53,16 @@ class OctoPwnRemoteBase:
 				response, error = self.decode_command_response(response)
 				if token not in self.__token_dispatch:
 					print('Token not found: %s' % token)
+					print('current token dispatch: %s' % self.__token_dispatch)
 					continue
 				await self.__token_dispatch[token].put((response, error))
 		except Exception as e:
+			print('Internal message handler error. Connection will be closed.')
 			traceback.print_exc()
-			print('Error: %s' % e)
 
 		finally:
 			await self.close()
 		
-	
 	def decode_response(self, response_raw):
 		if isinstance(response_raw, bytes):
 			response_raw = response_raw.decode()
@@ -90,15 +93,18 @@ class OctoPwnRemoteBase:
 			return None, Exception('Unknown status (command): %s Raw: %s' % (status, response_raw))
 
 	async def send_recv(self, data):
+		"""Used for commands that return a single response (result or error)"""
 		try:
 			token = await self.send(data)
 			return await asyncio.wait_for(self.__token_dispatch[token].get(), timeout=self.timeout)
 		except Exception as e:
 			return None, e
 		finally:
-			del self.__token_dispatch[token]
+			if token in self.__token_dispatch:
+				del self.__token_dispatch[token]
 
 	async def close(self):
+		"""Closes the connection and cancels the in_task"""
 		if self.__in_task is not None:
 			self.__in_task.cancel()
 		if self.ws is not None:
@@ -109,6 +115,7 @@ class OctoPwnRemoteBase:
 			self.__token_dispatch[token].put((None, Exception('Connection closed')))
 	
 	async def run(self, ws):
+		"""Always call this first to start the incoming message handler"""
 		try:
 			self.ws = ws
 			self.__in_task = asyncio.create_task(self.__handle_in())
@@ -118,10 +125,81 @@ class OctoPwnRemoteBase:
 			return False, e
 
 	async def handle_out_of_band(self, response, error):
+		"""Handles out of band messages (new credential, new target, new session)"""
 		if error is not None:
 			print('Out of band error: %s' % error)
 		else:
-			print('Out of band response: %s' % response)
+			if response.get('type') == 'credential':
+				await self.handle_new_credential(response.get('cid'), response.get('source_session_id'))
+			elif response.get('type') == 'target':
+				await self.handle_new_target(response.get('tid'), response.get('source_session_id'))
+			elif response.get('type') == 'session':
+				await self.handle_new_session(response.get('sid'), response.get('source_session_id'))
+			else:
+				print('Unhandled out of band response: %s' % response)
+
+	async def register_credential_handler(self, callback):
+		"""Register a callback to handle new credentials"""
+		self.__new_credential_callbacks.append(callback)
+
+	async def register_session_handler(self, callback):
+		"""Register a callback to handle new sessions"""
+		self.__new_session_callbacks.append(callback)
+	
+	async def register_target_handler(self, callback):
+		"""Register a callback to handle new targets"""
+		self.__new_target_callbacks.append(callback)
+	
+	async def unregister_credential_handler(self, callback):
+		"""Unregister a callback to handle new credentials"""
+		self.__new_credential_callbacks.remove(callback)
+
+	async def unregister_session_handler(self, callback):
+		"""Unregister a callback to handle new sessions"""
+		self.__new_session_callbacks.remove(callback)
+	
+	async def unregister_target_handler(self, callback):
+		"""Unregister a callback to handle new targets"""
+		self.__new_target_callbacks.remove(callback)
+	
+	async def handle_new_credential(self, cid:int, source_session_id:int):
+		"""Default handler for new credentials"""
+		try:
+			if len(self.__new_credential_callbacks) == 0:
+				print(f'New credential created: {cid} from session {source_session_id}')
+				print('Register a callback to handle the new credential')
+				return
+			
+			for callback in self.__new_credential_callbacks:
+				await callback(cid, source_session_id)
+		except Exception as e:
+			print('Error handling new credential: %s' % e)
+	
+	async def handle_new_session(self, sid:int, source_session_id:int):
+		"""Default handler for new sessions"""
+		try:
+			if len(self.__new_session_callbacks) == 0:
+				print(f'New session created: {sid} from session {source_session_id}')
+				print('Register a callback to handle the new session')
+				return
+			
+			for callback in self.__new_session_callbacks:
+				await callback(sid, source_session_id)
+		except Exception as e:
+			print('Error handling new session: %s' % e)
+
+	async def handle_new_target(self, tid:int, source_session_id:int):
+		"""Default handler for new targets"""
+		try:
+			if len(self.__new_target_callbacks) == 0:
+				print(f'New target created: {tid} from session {source_session_id}')
+				print('Register a callback to handle the new target')
+				return
+			
+			for callback in self.__new_target_callbacks:
+				await callback(tid, source_session_id)
+		except Exception as e:
+			print('Error handling new target: %s' % e)
 	
 	async def get_serverinfo(self):
 		cmd = {
@@ -152,18 +230,36 @@ class OctoPwnRemoteBase:
 			return await self.send_recv(cmd)
 		except Exception as e:
 			return None, e
-		
-	async def get_sessions(self):
+
+	async def get_credential(self, cid:int):
 		try:
 			cmd = {
 				"sessionid": "0",
-				"command": "get_sessions",
-				"args": {}
+				"command": "get_credential",
+				"args": {
+					"cid": cid
+				}
+			}
+			res, err = await self.send_recv(cmd)
+			if err is not None:
+				raise err
+			return res, None
+		except Exception as e:
+			return None, e
+
+	async def put_credential_hash(self, hashpw:List[Tuple[str,str]]):
+		try:
+			cmd = {
+				"sessionid": "0",
+				"command": "put_credential_hash",
+				"args": {
+					"hashpw": hashpw
+				}
 			}
 			return await self.send_recv(cmd)
 		except Exception as e:
 			return None, e
-
+	
 	async def create_attack(self, attacktype:str):
 		try:
 			cmd = {

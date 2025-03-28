@@ -55,6 +55,7 @@ setup(
 			'octopwn-remote-server = octopwnremote.server:main',
             'octopwn-remote-client = octopwnremote.client:main',
             'octopwn-remote-proxy = octopwnremote.proxy:main',
+			'octopwn-remote-hashcat = octopwnremote.hashcat:main',
 		],
 	}
 )
